@@ -1,0 +1,36 @@
+# Data & outputs
+datasets/
+runs/
+# Downloaded/trained YOLO weights
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Secrets / local config
+.env
+dashboard/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# --- Dashboard runtime artifacts (regenerated on each machine) ---
+dashboard/annotated/
+dashboard/incoming/
+dashboard/data/inspections.db
+dashboard/data/*.bak
+dashboard/data/*.joblib.bak
+
+# Large ML training data (retrain feature not in use; keep out of Git)
+dashboard/data/training/
+# Unused enriched model (not wired into serving)
+dashboard/data/metrology_model_enriched.joblib
+
+# Keep the live scoring model tracked so the remote PC gets it on pull:
+!dashboard/data/metrology_model.joblib

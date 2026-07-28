@@ -1,0 +1,12 @@
+# Core
+ultralytics>=8.3.0      # YOLO11 detect/classify/segment
+# ultralytics pulls in torch, torchvision, opencv, numpy, pillow, etc.
+#
+# NOTE: This project trains on CPU. Install CPU PyTorch FIRST so pip doesn't
+# pull CUDA wheels:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+
+# Optional, handy for data work
+pyyaml>=6.0
+tqdm>=4.66

@@ -1,0 +1,21 @@
+# YOLO detection dataset config for corner defect detection.
+#
+# Paths are relative to this file's location (the project root). The
+# prepare_dataset.py script creates this folder structure for you.
+
+path: datasets/corner
+train: images/train
+val: images/val
+test: images/test
+
+# Class names MUST match the order/ids in the CVAT 'obj.names' file.
+# VERIFY this order against your exported obj.names (first line = id 0).
+#
+# PASS/REJECT RULE (applied in application logic, not by the model):
+#   - BrokenChips present  -> REJECT (bad panel, real defect)
+#   - only WaterDrops / no boxes -> PASS (good panel)
+# WaterDrops is kept as its own class ONLY so the model learns to tell drops
+# apart from chips; a water drop by itself does NOT make a panel defective.
+names:
+  0: WaterDrops    # detected but NOT a defect -> panel still passes
+  1: BrokenChips   # real defect -> panel is rejected

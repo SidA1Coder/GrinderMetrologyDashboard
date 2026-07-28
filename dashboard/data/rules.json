@@ -1,0 +1,25 @@
+[
+  {
+    "name": "Burst of defects",
+    "type": "count",
+    "enabled": true,
+    "threshold": 3,
+    "window_minutes": 30,
+    "cooldown_minutes": 15
+  },
+  {
+    "name": "High defect rate",
+    "type": "rate",
+    "enabled": true,
+    "threshold_pct": 25.0,
+    "window_minutes": 60,
+    "min_samples": 8,
+    "cooldown_minutes": 30
+  },
+  {
+    "name": "Immediate broken chip",
+    "type": "immediate",
+    "enabled": false,
+    "cooldown_minutes": 5
+  }
+]

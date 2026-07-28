@@ -1,0 +1,17 @@
+# Dashboard runtime artifacts
+incoming/
+annotated/
+.env
+__pycache__/
+*.pyc
+
+# Ignore the data folder contents by default...
+data/*
+data/training/
+# ...but keep the live scoring model + alert rules so the remote PC gets them:
+!data/metrology_model.joblib
+!data/rules.json
+# Never track the local SQLite store, backups or the unused enriched model:
+data/inspections.db
+data/*.bak
+data/metrology_model_enriched.joblib

@@ -1,0 +1,14 @@
+# Dashboard-specific dependencies (in addition to the project's requirements.txt
+# which already provides ultralytics + torch + opencv).
+streamlit>=1.34
+plotly>=5.20
+pandas>=2.0
+requests>=2.31
+
+# Optional
+python-dotenv>=1.0          # load a local .env file
+streamlit-autorefresh>=1.0  # enables the auto-refresh checkbox
+SQLAlchemy>=2.0             # real SQL ODS connection (with an appropriate driver)
+pyodbc>=5.0                 # SQL Server ODBC driver for the metrology ODS
+scikit-learn>=1.3           # Stage 2 metrology anomaly detection / model
+joblib>=1.3                 # load/save the trained metrology model

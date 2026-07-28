@@ -1,0 +1,2 @@
+plates: 0
+equipment (tool) values:
