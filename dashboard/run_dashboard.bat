@@ -47,7 +47,7 @@ REM Stop any dashboard already listening on this port so this launch always uses
 REM the latest code and .env (otherwise the old process keeps the port and you
 REM see stale data).
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%PORT% " ^| findstr LISTENING') do (
-    echo Stopping old dashboard (PID %%P)...
+    echo Stopping old dashboard PID %%P
     taskkill /PID %%P /F >nul 2>&1
 )
 
