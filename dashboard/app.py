@@ -16,6 +16,7 @@ Features
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
@@ -45,6 +46,28 @@ st.set_page_config(
 branding.inject_theme()
 config.ensure_dirs()
 store.init_db()
+
+# --------------------------------------------------------------------------
+# Fast "Grinder Health only" build.
+# On this branch every view except the Grinder-Health landing page is turned
+# off so the landing page loads as fast as possible. Set FS50_LANDING_ONLY=0
+# to temporarily re-enable the full dashboard on this machine.
+# --------------------------------------------------------------------------
+LANDING_ONLY = os.getenv("FS50_LANDING_ONLY", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "",
+)
+
+
+def _feature_unavailable(name: str) -> None:
+    """Placeholder shown for views disabled on the fast Grinder-Health build."""
+    branding.section(name, "temporarily unavailable on this branch")
+    st.info(
+        f"**{name}** is turned off on the fast Grinder-Health build to keep the "
+        "landing page snappy. It is available on the full dashboard branch."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -285,7 +308,10 @@ if auto:
 
 with st.spinner("Loading Broken Monitor data…"):
     mdf, vdf = load_metrology(
-        win_start.isoformat(), win_end.isoformat(), bool(use_ml), bool(force_mock)
+        win_start.isoformat(),
+        win_end.isoformat(),
+        bool(use_ml) and not LANDING_ONLY,
+        bool(force_mock),
     )
 
 with st.spinner("Detecting defect alerts…"):
@@ -811,6 +837,22 @@ with tab_overview:
 # --------------------------------------------------------------------------
 # FS100 Broken — post-VTD scrap, backtracked to the grinder that likely caused it
 # --------------------------------------------------------------------------
+if LANDING_ONLY:
+    for _tab, _name in (
+        (tab_broken, "FS100 Broken"),
+        (tab_live, "Corner Images"),
+        (tab_locations, "Locations"),
+        (tab_metrology, "Edge Grind Profile"),
+        (tab_history, "History"),
+        (tab_alerts, "Alerts / Log / Rules"),
+    ):
+        with _tab:
+            _feature_unavailable(_name)
+    # Everything the landing page needs is already rendered above; stop here so
+    # the heavy per-tab bodies below never run on the fast build.
+    st.stop()
+
+
 with tab_broken:
     branding.section(
         "FS100 broken plates (post-VTD scrap)",
