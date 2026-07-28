@@ -10,19 +10,22 @@ REM ==========================================================================
 setlocal
 set CONDA_ACT=%USERPROFILE%\AppData\Local\miniconda3\Scripts\activate.bat
 
+REM Change PORT here to run the dashboard on a different port (e.g. 80, 8080).
+set PORT=8502
+
 call "%CONDA_ACT%" fs50defect
 cd /d "%~dp0"
 
-REM Stop any dashboard already listening on 8501 so this launch always uses the
-REM latest code and .env (otherwise the old process keeps the port and you see
-REM stale data).
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8501 " ^| findstr LISTENING') do (
+REM Stop any dashboard already listening on this port so this launch always uses
+REM the latest code and .env (otherwise the old process keeps the port and you
+REM see stale data).
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%PORT% " ^| findstr LISTENING') do (
     echo Stopping old dashboard (PID %%P)...
     taskkill /PID %%P /F >nul 2>&1
 )
 
 REM --server.address 0.0.0.0 lets teammates open it from their own PCs.
-python -m streamlit run app.py --server.headless true --server.address 0.0.0.0 --server.port 8501
+python -m streamlit run app.py --server.headless true --server.address 0.0.0.0 --server.port %PORT%
 
 pause
 
