@@ -41,11 +41,32 @@ st.set_page_config(
     page_title="FS50 Corner & Edge Metrology",
     page_icon=str(branding.LOGO_PATH) if branding.LOGO_PATH.exists() else "🔎",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 branding.inject_theme()
 config.ensure_dirs()
 store.init_db()
+
+# --------------------------------------------------------------------------
+# Kiosk mode — hide the sidebar entirely so unattended viewers cannot change
+# the time range, see the data-source mode, or trigger scans. The sidebar
+# widgets still run (providing their default values); they are just hidden.
+# Set FS50_KIOSK=0 to show the sidebar again on a dev machine.
+# --------------------------------------------------------------------------
+KIOSK = os.getenv("FS50_KIOSK", "1").strip().lower() not in ("0", "false", "no", "")
+if KIOSK:
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebar"] { display: none !important; }
+            [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+            [data-testid="collapsedControl"] { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 # --------------------------------------------------------------------------
 # Fast "Grinder Health only" build.
@@ -104,16 +125,17 @@ if col_a.button("🔄 Scan now", use_container_width=True):
                 st.toast(f"🚨 {a['rule']}: {a['message']}", icon="🚨")
 
 auto = st.sidebar.checkbox(
-    "Auto-refresh (30s)",
-    value=False,
-    help="Periodically reload live data. Heavy live EGP queries mean each "
-    "refresh can take a while to finish before the next tick.",
+    "Auto-refresh (15 min)",
+    value=True,
+    help="Periodically reload live data so an unattended wall display stays "
+    "current. Each refresh re-runs the live EGP queries.",
 )
 
 st.sidebar.divider()
 time_window = st.sidebar.selectbox(
     "Dashboard time range",
     [
+        "Last 30 minutes",
         "Last 1 hour",
         "Last 8 hours",
         "Last 24 hours",
@@ -122,11 +144,12 @@ time_window = st.sidebar.selectbox(
         "Custom range…",
     ],
     index=0,
-    help="Live EGP scans are heavy — start with 1 hour for a fast landing, "
-    "widen the window only when you need more history. Pick 'Custom range…' "
-    "for an exact calendar window.",
+    help="Live EGP scans are heavy — start with 30 minutes for the fastest "
+    "landing, widen the window only when you need more history. Pick "
+    "'Custom range…' for an exact calendar window.",
 )
 _preset_delta = {
+    "Last 30 minutes": timedelta(minutes=30),
     "Last 1 hour": timedelta(hours=1),
     "Last 8 hours": timedelta(hours=8),
     "Last 24 hours": timedelta(hours=24),
@@ -297,7 +320,7 @@ if auto:
     try:
         from streamlit_autorefresh import st_autorefresh
 
-        st_autorefresh(interval=30_000, key="auto")
+        st_autorefresh(interval=900_000, key="auto")
         load_metrology.clear()
         load_alerts.clear()
         load_broken.clear()
