@@ -618,10 +618,11 @@ with tab_overview:
                 col.plotly_chart(fig, use_container_width=True, key=f"panel_{g}")
         st.caption(
             "Marker colour = defect type (Chip · Dropout · Shiner). Hollow marker "
-            "= suspected skewed / out-of-focus reading. Long edges run along the "
-            "top & bottom rails (Grinder 1); short edges along the left & right "
-            "rails (Grinder 2). Corner map is provisional pending the TR/LL/LR/TL "
-            "training material."
+            "= suspected skewed / out-of-focus reading. Corners are numbered 1–4 "
+            "(1 = bottom-left, 2 = bottom-right, 3 = top-right, 4 = top-left); each "
+            "carries its grinder reference (SE = Short-edge/Grinder 2, LE = Long-edge/"
+            "Grinder 1). Long edge = X (0→2300 mm), short edge = Y (0→1215 mm). SubID "
+            "is marked ~80 mm from corner 1 on the bottom long edge."
         )
 
         # Defect-type × grinder and defect-type × edge/side summary charts.

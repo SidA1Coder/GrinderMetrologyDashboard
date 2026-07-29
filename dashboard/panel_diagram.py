@@ -12,10 +12,22 @@ Geometry / labelling notes
 * EGP reports every defect with an ``edge`` (Long/Short), a ``side``
   (Left/Right) and a position (``pos_x`` along the long axis, ``pos_y`` along
   the short axis). We map that to the panel outline below.
-* Corner acronyms LL / TL / TR / LR (Leading Left, Trailing Left, Trailing
-  Right, Leading Right) map to the four rectangle corners via
-  :data:`CORNER_LABELS`. The exact placement is process-defined and easy to
-  re-map once the training material is supplied — only this one dict changes.
+* Corners are numbered 1-4 so ops can name a defect location off the drawing.
+  Each corner also carries the process reference (which Short-Edge/Long-Edge
+  grinder groove position it maps to). Layout::
+
+        x=0                                   x=2300
+   y=1215  4 ─────────── top long edge ─────────── 3
+           │  (Left long edge · Grinder 1)         │
+     right │                                       │ left
+     short │                                       │ short
+      edge │                                       │ edge
+      (G2) │  (Right long edge · Grinder 1)        │ (G2)
+   y=0     1 ─────────── bottom long edge ──────── 2
+            ▪ SubID  (~80 mm from corner 1)
+
+* Long edge is the X axis (0 → 2300, corner 4→3 across the top / 1→2 bottom).
+* Short edge is the Y axis (0 → 1215, corner 1→4 left / 2→3 right).
 """
 
 from __future__ import annotations
@@ -25,16 +37,19 @@ import plotly.graph_objects as go
 
 import config
 
-# Corner acronyms placed at each rectangle corner. Keys are (x_end, y_end) where
-# 0 = start (min) and 1 = end (max) of each axis. Provisional mapping — adjust
-# once the TR/LL/LR/TL training material is supplied; nothing else needs to
-# change.
-CORNER_LABELS: dict[tuple[int, int], str] = {
-    (0, 0): "LL",  # Leading Left   (x min, y min)
-    (1, 0): "LR",  # Leading Right  (x max, y min)
-    (0, 1): "TL",  # Trailing Left  (x min, y max)
-    (1, 1): "TR",  # Trailing Right (x max, y max)
+# Numbered corners + the process reference each corner maps to. Keys are
+# (x_end, y_end) where 0 = start (min) and 1 = end (max) of each axis.
+#   SE = Short Edge (Grinder 2), LE = Long Edge (Grinder 1).
+CORNER_LABELS: dict[tuple[int, int], dict[str, str]] = {
+    (0, 0): {"num": "1", "sub": "SE→G2 LT | LE→G1 RT"},  # bottom-left
+    (1, 0): {"num": "2", "sub": "SE→G2 RT | LE→G1 RL"},  # bottom-right
+    (1, 1): {"num": "3", "sub": "SE→G2 RL | LE→G1 LL"},  # top-right
+    (0, 1): {"num": "4", "sub": "SE→G2 LL | LE→G1 LT"},  # top-left
 }
+
+# Where the SubID is physically marked: on the long (bottom) edge, ~80 mm from
+# corner 1.
+SUBID_POS_MM = 80.0
 
 # Defect palette (high-contrast on the dark canvas).
 DEFECT_COLORS = {
@@ -73,7 +88,7 @@ def panel_figure(
     title: str,
     long_mm: float | None = None,
     short_mm: float | None = None,
-    height: int = 230,
+    height: int = 260,
 ) -> go.Figure:
     """Build a module-outline figure with the corner labels and defect markers.
 
@@ -95,15 +110,54 @@ def panel_figure(
         fillcolor="rgba(56,189,248,0.06)",
         layer="below",
     )
-    # Corner labels.
-    for (xe, ye), label in CORNER_LABELS.items():
+    # Corner numbers (1-4) + process reference sub-label, placed just outside
+    # each corner so ops can name a defect location straight off the drawing.
+    x_out = long_mm * 0.06
+    y_out = short_mm * 0.13
+    for (xe, ye), info in CORNER_LABELS.items():
+        # Big corner number, sitting inside the panel corner.
         fig.add_annotation(
-            x=(long_mm - 60) if xe else 60,
-            y=(short_mm - 40) if ye else 40,
-            text=f"<b>{label}</b>",
+            x=(long_mm - x_out) if xe else x_out,
+            y=(short_mm - y_out) if ye else y_out,
+            text=f"<b>{info['num']}</b>",
             showarrow=False,
-            font=dict(size=11, color="#8595AB"),
+            font=dict(size=18, color="#E7EEF7"),
+            bgcolor="rgba(56,189,248,0.18)",
+            bordercolor="#38BDF8",
+            borderwidth=1,
+            borderpad=3,
         )
+        # Process reference, just outside the panel (above top / below bottom).
+        fig.add_annotation(
+            x=(long_mm - x_out) if xe else x_out,
+            y=(short_mm + y_out * 1.3) if ye else (-y_out * 1.3),
+            text=info["sub"],
+            showarrow=False,
+            font=dict(size=8.5, color="#8595AB"),
+            xanchor="center",
+        )
+
+    # SubID marker: a small labelled box on the bottom long edge, ~80 mm from
+    # corner 1, matching where the plate is physically marked.
+    box_w = long_mm * 0.05
+    box_h = short_mm * 0.09
+    fig.add_shape(
+        type="rect",
+        x0=SUBID_POS_MM - box_w / 2,
+        x1=SUBID_POS_MM + box_w / 2,
+        y0=0,
+        y1=box_h,
+        line=dict(color="#E7EEF7", width=1.4),
+        fillcolor="rgba(231,238,247,0.14)",
+        layer="above",
+    )
+    fig.add_annotation(
+        x=SUBID_POS_MM,
+        y=box_h / 2,
+        text="SubID",
+        showarrow=False,
+        font=dict(size=7.5, color="#E7EEF7"),
+    )
 
     # Defect markers.
     if defects is not None and not defects.empty:
@@ -138,17 +192,42 @@ def panel_figure(
                 )
             )
 
-    fig.update_xaxes(range=[-80, long_mm + 80], visible=False)
+    # Long edge = X axis (0 -> long), short edge = Y axis (0 -> short). Show the
+    # end-point ticks so ops can read position in mm straight off the drawing.
+    fig.update_xaxes(
+        range=[-long_mm * 0.05, long_mm * 1.05],
+        visible=True,
+        title=dict(
+            text="Long edge (mm) · 0 = corners 1/4 -> corners 2/3",
+            font=dict(size=8, color="#8595AB"),
+        ),
+        tickvals=[0, long_mm / 2, long_mm],
+        ticktext=["0", f"{long_mm / 2:.0f}", f"{long_mm:.0f}"],
+        tickfont=dict(size=8, color="#8595AB"),
+        showgrid=False,
+        zeroline=False,
+        linecolor="#334155",
+    )
     fig.update_yaxes(
-        range=[-60, short_mm + 60],
-        visible=False,
+        range=[-short_mm * 0.22, short_mm * 1.22],
+        visible=True,
+        title=dict(
+            text="Short edge (mm) · 0 = corners 1/2 -> corners 4/3",
+            font=dict(size=8, color="#8595AB"),
+        ),
+        tickvals=[0, short_mm / 2, short_mm],
+        ticktext=["0", f"{short_mm / 2:.0f}", f"{short_mm:.0f}"],
+        tickfont=dict(size=8, color="#8595AB"),
+        showgrid=False,
+        zeroline=False,
+        linecolor="#334155",
         scaleanchor="x",
         scaleratio=1,
     )
     fig.update_layout(
         title=dict(text=title, font=dict(size=13, color="#E7EEF7"), x=0.02, y=0.97),
         height=height,
-        margin=dict(l=6, r=6, t=28, b=6),
+        margin=dict(l=6, r=6, t=28, b=30),
         showlegend=False,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
