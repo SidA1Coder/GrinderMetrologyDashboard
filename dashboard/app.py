@@ -592,7 +592,7 @@ with tab_overview:
     # ----------------------------------------------------------------------
     branding.section(
         "Panel defect map by grinder",
-        "Where on the module each grinder's defects land · LL/TL/TR/LR corners",
+        "Where on the module each grinder's defects land · corners 1-4",
     )
     if adf is None or adf.empty:
         st.info("No defects to map in this window.")
@@ -601,7 +601,7 @@ with tab_overview:
             adf["grinder"].dropna().unique()
         )
         # Show the full A–E roster so an empty grinder still reads "clean".
-        cols_per_row = 3
+        cols_per_row = 2
         for i in range(0, len(_grinders_present), cols_per_row):
             row_grinders = _grinders_present[i : i + cols_per_row]
             cols = st.columns(len(row_grinders))
@@ -622,45 +622,56 @@ with tab_overview:
             "(1 = bottom-left, 2 = bottom-right, 3 = top-right, 4 = top-left); each "
             "carries its grinder reference (SE = Short-edge/Grinder 2, LE = Long-edge/"
             "Grinder 1). Long edge = X (0→2300 mm), short edge = Y (0→1230 mm). SubID "
-            "is marked ~80 mm from corner 1 on the bottom long edge."
+            "is marked 500 mm from corner 1 on the bottom long edge."
         )
 
-        # Defect-type × grinder and defect-type × edge/side summary charts.
-        cc1, cc2 = st.columns(2)
-        by_g = adf.groupby(["grinder", "defect"]).size().reset_index(name="count")
-        if not by_g.empty:
-            fig_g = px.bar(
-                by_g,
-                x="grinder",
-                y="count",
-                color="defect",
-                color_discrete_map=panel_diagram.DEFECT_COLORS,
-                title="Defects by grinder & type",
+        # Corner heatmap: which grinder chips which panel corner. Rows = grinder
+        # A–E, columns = the 8 corner·edge slots, cell = spec-defect count. A
+        # defect lands on whichever corner it sits closest to along its edge.
+        hm = adf.copy()
+        hm["corner_slot"] = hm.apply(panel_diagram.defect_corner_slot, axis=1)
+        hm = hm[hm["corner_slot"].notna()]
+        if not hm.empty:
+            pivot = (
+                hm.groupby(["grinder", "corner_slot"])
+                .size()
+                .unstack(fill_value=0)
+                .reindex(
+                    index=_grinders_present,
+                    columns=panel_diagram.CORNER_SLOTS,
+                    fill_value=0,
+                )
             )
-            fig_g.update_layout(height=320, margin=dict(l=6, r=6, t=40, b=6))
-            cc1.plotly_chart(fig_g, use_container_width=True, key="def_by_grinder")
-        by_e = (
-            adf.assign(loc=adf["edge"].astype(str) + " · " + adf["side"].astype(str))
-            .groupby(["loc", "defect"])
-            .size()
-            .reset_index(name="count")
-        )
-        if not by_e.empty:
-            fig_e = px.bar(
-                by_e,
-                x="loc",
-                y="count",
-                color="defect",
-                color_discrete_map=panel_diagram.DEFECT_COLORS,
-                title="Defects by edge · side & type",
+            # 0 defects = healthy, so paint it a neutral slate (blends into the
+            # background) rather than a warm colour that falsely reads as "bad".
+            # Only positive counts warm up amber -> red.
+            _max = int(pivot.to_numpy().max()) if pivot.size else 0
+            fig_hm = px.imshow(
+                pivot,
+                labels=dict(x="Grinder groove position", y="Grinder", color="Defects"),
+                color_continuous_scale=[
+                    [0.0, "#1E293B"],  # 0 defects -> neutral slate (healthy)
+                    [0.01, "#3B4A63"],
+                    [0.5, "#F5B301"],  # amber
+                    [1.0, "#FF2E4D"],  # red (worst)
+                ],
+                zmin=0,
+                zmax=max(_max, 1),
+                text_auto=True,
+                aspect="auto",
+                title="Spec defect counts · grinder × groove position",
             )
-            fig_e.update_layout(
-                height=320,
-                margin=dict(l=6, r=6, t=40, b=6),
-                xaxis_title="",
-                yaxis_title="count",
+            fig_hm.update_xaxes(side="top", tickangle=0)
+            fig_hm.update_layout(height=360, margin=dict(l=6, r=6, t=60, b=6))
+            st.plotly_chart(fig_hm, use_container_width=True, key="def_corner_heatmap")
+            st.caption(
+                "Rows = grinder A–E, columns = the 8 grinder-groove positions "
+                "(G2 = short-edge grinder, G1 = long-edge grinder). Each defect is "
+                "attributed to whichever corner it sits closest to along its edge, "
+                "then mapped to that corner's groove; brighter = more spec defects."
             )
-            cc2.plotly_chart(fig_e, use_container_width=True, key="def_by_edge")
+        else:
+            st.info("No positioned defects to map to corners in this window.")
     st.divider()
 
     if mdf.empty:

@@ -25,8 +25,22 @@ import sys
 import traceback
 from datetime import datetime, timedelta
 
+# Force UTF-8 output so redirecting to a file on Windows (cp1252 default) does
+# not crash when alert messages contain non-ASCII characters (e.g. the warning
+# emoji). Fall back silently if reconfigure is unavailable.
+try:  # pragma: no cover - environment dependent
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+except Exception:  # noqa: BLE001
+    pass
+
 import config
 import metrology
+
+
+def _ascii(text: str) -> str:
+    """Drop non-ASCII so printing never fails regardless of console codepage."""
+    return str(text).encode("ascii", "ignore").decode("ascii")
 
 
 def _parse_ts(text: str) -> datetime:
@@ -106,11 +120,8 @@ def main() -> int:
                 for c in ("time", "grinder", "groove", "type", "message")
                 if c in adf.columns
             ]
-            print(
-                adf[cols].head(10).to_string(index=False)
-                if cols
-                else adf.head(10).to_string(index=False)
-            )
+            sample = adf[cols].head(10) if cols else adf.head(10)
+            print(_ascii(sample.to_string(index=False)))
     except Exception:  # noqa: BLE001
         print("build_alerts()  : ERROR")
         traceback.print_exc()

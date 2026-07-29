@@ -24,7 +24,7 @@ Geometry / labelling notes
       edge │                                       │ edge
       (G2) │  (Right long edge · Grinder 1)        │ (G2)
    y=0     1 ─────────── bottom long edge ──────── 2
-            ▪ SubID  (~80 mm from corner 1)
+            ▪ SubID  (500 mm from corner 1)
 
 * Long edge is the X axis (0 → 2300, corner 4→3 across the top / 1→2 bottom).
 * Short edge is the Y axis (0 → 1215, corner 1→4 left / 2→3 right).
@@ -47,9 +47,37 @@ CORNER_LABELS: dict[tuple[int, int], dict[str, str]] = {
     (0, 1): {"num": "4", "sub": "SE→G2 LL | LE→G1 LT"},  # top-left
 }
 
-# Where the SubID is physically marked: on the long (bottom) edge, ~80 mm from
+# Where the SubID is physically marked: on the long (bottom) edge, 500 mm from
 # corner 1.
-SUBID_POS_MM = 80.0
+SUBID_POS_MM = 500.0
+
+# Fixed column order for the corner heatmap — 4 numbered corners x 2 edges
+# (Long / Short) = 8 possible defect slots per panel. Each defect is attributed
+# to whichever corner it sits closest to along its own edge, then reported as
+# the grinder-groove position that corner maps to (SE→Grinder 2, LE→Grinder 1).
+CORNER_SLOTS = [
+    "G2 LL",
+    "G2 LT",
+    "G2 RL",
+    "G2 RT",
+    "G1 LT",
+    "G1 RT",
+    "G1 LL",
+    "G1 RL",
+]
+
+# (corner number, edge) -> grinder-groove label, per CORNER_LABELS above.
+#   Short edge = Grinder 2, Long edge = Grinder 1.
+_SLOT_GROOVE = {
+    (1, "short"): "G2 LT",
+    (1, "long"): "G1 RT",
+    (2, "short"): "G2 RT",
+    (2, "long"): "G1 RL",
+    (3, "short"): "G2 RL",
+    (3, "long"): "G1 LL",
+    (4, "short"): "G2 LL",
+    (4, "long"): "G1 LT",
+}
 
 # Defect palette (high-contrast on the dark canvas).
 DEFECT_COLORS = {
@@ -83,12 +111,50 @@ def _defect_xy(row: pd.Series, long_mm: float, short_mm: float) -> tuple[float, 
     return x, y
 
 
+def defect_corner_slot(
+    row: pd.Series,
+    long_mm: float | None = None,
+    short_mm: float | None = None,
+) -> str | None:
+    """Attribute one defect to its nearest corner slot (one of CORNER_SLOTS).
+
+    A defect lies on a Long or a Short edge; whichever end of that edge its
+    position is closer to picks the corner number (1-4). The corner+edge is then
+    reported as the grinder-groove label it maps to (e.g. ``"G1 RT"``). Returns
+    ``None`` if the edge is unknown.
+    """
+    long_mm = float(long_mm or config.PANEL_LONG_MM)
+    short_mm = float(short_mm or config.PANEL_SHORT_MM)
+    edge = str(row.get("edge") or "").lower()
+    side = str(row.get("side") or "").lower()
+
+    if edge.startswith("long"):
+        px = row.get("pos_x")
+        px = float(px) if pd.notna(px) else long_mm / 2.0
+        near_start = px < long_mm / 2.0  # closer to x = 0
+        if side == "right":  # bottom rail: C1 (x0) .. C2 (xmax)
+            corner = 1 if near_start else 2
+        else:  # top rail: C4 (x0) .. C3 (xmax)
+            corner = 4 if near_start else 3
+        return _SLOT_GROOVE[(corner, "long")]
+    if edge.startswith("short"):
+        py = row.get("pos_y")
+        py = float(py) if pd.notna(py) else short_mm / 2.0
+        near_start = py < short_mm / 2.0  # closer to y = 0
+        if side == "left":  # x=0 rail: C1 (y0) .. C4 (ymax)
+            corner = 1 if near_start else 4
+        else:  # x=max rail: C2 (y0) .. C3 (ymax)
+            corner = 2 if near_start else 3
+        return _SLOT_GROOVE[(corner, "short")]
+    return None
+
+
 def panel_figure(
     defects: pd.DataFrame | None,
     title: str,
     long_mm: float | None = None,
     short_mm: float | None = None,
-    height: int = 260,
+    height: int = 340,
 ) -> go.Figure:
     """Build a module-outline figure with the corner labels and defect markers.
 
@@ -121,11 +187,11 @@ def panel_figure(
             y=(short_mm - y_out) if ye else y_out,
             text=f"<b>{info['num']}</b>",
             showarrow=False,
-            font=dict(size=18, color="#E7EEF7"),
+            font=dict(size=22, color="#E7EEF7"),
             bgcolor="rgba(56,189,248,0.18)",
             bordercolor="#38BDF8",
             borderwidth=1,
-            borderpad=3,
+            borderpad=4,
         )
         # Process reference, just outside the panel (above top / below bottom).
         fig.add_annotation(
@@ -133,7 +199,7 @@ def panel_figure(
             y=(short_mm + y_out * 1.3) if ye else (-y_out * 1.3),
             text=info["sub"],
             showarrow=False,
-            font=dict(size=8.5, color="#8595AB"),
+            font=dict(size=10, color="#FFFFFF"),
             xanchor="center",
         )
 
@@ -156,7 +222,7 @@ def panel_figure(
         y=box_h / 2,
         text="SubID",
         showarrow=False,
-        font=dict(size=7.5, color="#E7EEF7"),
+        font=dict(size=9, color="#E7EEF7"),
     )
 
     # Defect markers.
@@ -198,12 +264,12 @@ def panel_figure(
         range=[-long_mm * 0.05, long_mm * 1.05],
         visible=True,
         title=dict(
-            text="Long edge (mm) · 0 = corners 1/4 -> corners 2/3",
-            font=dict(size=8, color="#8595AB"),
+            text="Long edge (mm)",
+            font=dict(size=9, color="#8595AB"),
         ),
         tickvals=[0, long_mm / 2, long_mm],
         ticktext=["0", f"{long_mm / 2:.0f}", f"{long_mm:.0f}"],
-        tickfont=dict(size=8, color="#8595AB"),
+        tickfont=dict(size=9, color="#8595AB"),
         showgrid=False,
         zeroline=False,
         linecolor="#334155",
@@ -212,12 +278,12 @@ def panel_figure(
         range=[-short_mm * 0.22, short_mm * 1.22],
         visible=True,
         title=dict(
-            text="Short edge (mm) · 0 = corners 1/2 -> corners 4/3",
-            font=dict(size=8, color="#8595AB"),
+            text="Short edge (mm)",
+            font=dict(size=9, color="#8595AB"),
         ),
         tickvals=[0, short_mm / 2, short_mm],
         ticktext=["0", "615", "1230"],
-        tickfont=dict(size=8, color="#8595AB"),
+        tickfont=dict(size=9, color="#8595AB"),
         showgrid=False,
         zeroline=False,
         linecolor="#334155",
