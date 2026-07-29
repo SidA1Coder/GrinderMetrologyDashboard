@@ -621,7 +621,7 @@ with tab_overview:
             "= suspected skewed / out-of-focus reading. Corners are numbered 1–4 "
             "(1 = bottom-left, 2 = bottom-right, 3 = top-right, 4 = top-left); each "
             "carries its grinder reference (SE = Short-edge/Grinder 2, LE = Long-edge/"
-            "Grinder 1). Long edge = X (0→2300 mm), short edge = Y (0→1215 mm). SubID "
+            "Grinder 1). Long edge = X (0→2300 mm), short edge = Y (0→1230 mm). SubID "
             "is marked ~80 mm from corner 1 on the bottom long edge."
         )
 

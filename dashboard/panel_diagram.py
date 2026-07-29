@@ -216,7 +216,7 @@ def panel_figure(
             font=dict(size=8, color="#8595AB"),
         ),
         tickvals=[0, short_mm / 2, short_mm],
-        ticktext=["0", f"{short_mm / 2:.0f}", f"{short_mm:.0f}"],
+        ticktext=["0", "615", "1230"],
         tickfont=dict(size=8, color="#8595AB"),
         showgrid=False,
         zeroline=False,
