@@ -32,6 +32,7 @@ import streamlit as st
 import alerts
 import branding
 import config
+import egp_missed
 import ingestion
 import metrology
 import panel_diagram
@@ -785,88 +786,116 @@ with tab_overview:
                 use_container_width=True,
             )
 
-        st.divider()
 
-        # -- Grinder defects: throughput + rejected, stacked by grinder --------
-        st.markdown("#### Grinder throughput & rejects")
-        g_left, g_right = st.columns(2)
+# --------------------------------------------------------------------------
+# EGP Missed Detection Capture
+# Plates EGP stamped bad (998 / 99) that made it to FS100 or FS350 anyway.
+# --------------------------------------------------------------------------
+with tab_overview:
+    st.divider()
+    branding.section(
+        "EGP missed detection capture",
+        "Plates marked bad (MES code 998 / 99) that continued downstream",
+    )
+    _egp_win_h = 3  # hours to look back
+    _egp_end = datetime.now()
+    _egp_start = _egp_end - timedelta(hours=_egp_win_h)
+    with st.spinner(f"Checking EGP bad-plate codes (last {_egp_win_h} h)\u2026"):
+        _ms = egp_missed.build_missed_summary(_egp_start, _egp_end)
 
-        g_tp = m.groupby(["bucket", "grinder"]).size().reset_index(name="plates")
-        g_left.plotly_chart(
-            px.bar(
-                g_tp,
-                x="bucket",
-                y="plates",
-                color="grinder",
-                title=f"Total throughput by grinder (per {freq_label})",
-                labels={"bucket": freq_label, "plates": "plates"},
-            ),
-            use_container_width=True,
+    _col_egp, _col_fs100, _col_fs350 = st.columns(3)
+
+    # --- Box 1: Marked Bad at EGP -------------------------------------------
+    with _col_egp:
+        st.metric(
+            "\U0001f6ab Marked bad at EGP",
+            _ms["bad_count"],
+            help=f"Distinct SubIDs with MES code 998 or 99 in last {_egp_win_h} h",
         )
-        g_rej = (
-            m[m["rejected"] == 1]
-            .groupby(["bucket", "grinder"])
-            .size()
-            .reset_index(name="rejected")
-        )
-        if g_rej.empty:
-            g_right.success("No rejected plates by grinder in this window.")
-        else:
-            g_right.plotly_chart(
-                px.bar(
-                    g_rej,
-                    x="bucket",
-                    y="rejected",
-                    color="grinder",
-                    title=f"Rejected panels by grinder (per {freq_label})",
-                    labels={"bucket": freq_label, "rejected": "rejected"},
-                ),
-                use_container_width=True,
-            )
-
-        # -- Broken monitor: throughput + broken, by VTD line ------------------
-        st.markdown("#### VTD throughput & broken panels")
-        has_vtd = "vtd" in m and (m["vtd"] != "?").any()
-        if not has_vtd:
-            st.caption(
-                "VTD lineage unavailable for these plates (no coater run records "
-                "resolved). Broken-by-VTD charts appear once VTD data is present."
-            )
-        else:
-            v = m[m["vtd"] != "?"].copy()
-            v_left, v_right = st.columns(2)
-            v_tp = v.groupby(["bucket", "vtd"]).size().reset_index(name="plates")
-            v_left.plotly_chart(
-                px.bar(
-                    v_tp,
-                    x="bucket",
-                    y="plates",
-                    color="vtd",
-                    title=f"Total throughput by VTD (per {freq_label})",
-                    labels={"bucket": freq_label, "plates": "plates"},
-                ),
-                use_container_width=True,
-            )
-            v_brk = (
-                v[v["broken"] == 1]
-                .groupby(["bucket", "vtd"])
-                .size()
-                .reset_index(name="broken")
-            )
-            if v_brk.empty:
-                v_right.success("No break-risk panels by VTD in this window.")
-            else:
-                v_right.plotly_chart(
-                    px.bar(
-                        v_brk,
-                        x="bucket",
-                        y="broken",
-                        color="vtd",
-                        title=f"Break-risk panels by VTD (per {freq_label})",
-                        labels={"bucket": freq_label, "broken": "panels"},
-                    ),
-                    use_container_width=True,
+        if _ms["bad_count"] > 0:
+            with st.popover("Details + lane breakdown"):
+                st.markdown(
+                    f"**{_ms['bad_count']} plates marked bad by EGP "
+                    f"(code 998 / 99) — last {_egp_win_h} h**"
                 )
+                lc = _ms["lane_counts"]
+                if not lc.empty:
+                    st.markdown("**By EGP lane:**")
+                    for lane, cnt in lc.items():
+                        st.write(f"\u2022 Lane {lane}: {int(cnt)} reads")
+                bdf = _ms["bad_df"][
+                    ["SubID", "EquipmentID", "EdgeType", "MES_ResultCode", "ReadTime"]
+                ].copy()
+                bdf["ReadTime"] = bdf["ReadTime"].dt.strftime("%m-%d %H:%M")
+                st.dataframe(bdf, use_container_width=True, hide_index=True)
+                st.caption("Select all + Ctrl-C to copy.")
+
+    # --- Box 2: Reached FS100 (VTD Coater) ----------------------------------
+    with _col_fs100:
+        st.metric(
+            "\u26a0\ufe0f Reached FS100 (VTD)",
+            _ms["fs100_count"],
+            delta=None,
+            help="Bad EGP plates that had a barcode read at any VTD_COATER",
+        )
+        if _ms["fs100_count"] > 0:
+            with st.popover("Details + lane breakdown"):
+                st.markdown(
+                    f"**{_ms['fs100_count']} bad plates read at FS100 "
+                    f"(VTD_COATER) — last {_egp_win_h} h**"
+                )
+                f1 = _ms["fs100_df"].copy()
+                # Lane distribution by Location
+                loc_dist = f1["Location"].value_counts()
+                if not loc_dist.empty:
+                    st.markdown("**By VTD lane:**")
+                    for loc, cnt in loc_dist.items():
+                        st.write(f"\u2022 {loc}: {int(cnt)} reads")
+                f1["TimestampUtc"] = f1["TimestampUtc"].dt.strftime("%m-%d %H:%M")
+                st.dataframe(
+                    f1[["SubId", "Location", "TimestampUtc"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption("Select all + Ctrl-C to copy.")
+        elif _ms["bad_count"] > 0:
+            st.success("None reached FS100 \u2714")
+
+    # --- Box 3: Reached FS350 (Bussing) -------------------------------------
+    with _col_fs350:
+        st.metric(
+            "\U0001f6a8 Reached FS350 (Bussing)",
+            _ms["fs350_count"],
+            help="Bad EGP plates that had a barcode read at any BUSSING station",
+        )
+        if _ms["fs350_count"] > 0:
+            with st.popover("Details + lane breakdown"):
+                st.markdown(
+                    f"**{_ms['fs350_count']} bad plates read at FS350 "
+                    f"(Bussing) — last {_egp_win_h} h**"
+                )
+                f3 = _ms["fs350_df"].copy()
+                loc_dist = f3["Location"].value_counts()
+                if not loc_dist.empty:
+                    st.markdown("**By Bussing lane:**")
+                    for loc, cnt in loc_dist.items():
+                        st.write(f"\u2022 {loc}: {int(cnt)} reads")
+                f3["TimestampUtc"] = f3["TimestampUtc"].dt.strftime("%m-%d %H:%M")
+                st.dataframe(
+                    f3[["SubId", "Location", "TimestampUtc"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption("Select all + Ctrl-C to copy.")
+        elif _ms["bad_count"] > 0:
+            st.success("None reached FS350 \u2714")
+
+    st.caption(
+        f"Window: last {_egp_win_h} h. Bad = MES_ResultCode 998 (EGP A/B) or 99 (EGP C). "
+        "A SubID is counted once even if both LE and SE reads are bad. "
+        "Downstream checks join on SubID against "
+        "PartProduced at VTD\_COATER (A–E) and BUSSING (A–D)."
+    )
 
 
 # --------------------------------------------------------------------------
