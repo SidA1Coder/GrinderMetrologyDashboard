@@ -30,7 +30,7 @@ import pandas as pd
 # Keyed by the *leaf* table name (schema/database prefixes are ignored so both
 # ``ProcessData.ProcessHistory.EGPData`` and ``[...].[EGPData]`` resolve here).
 _RID: dict[str, str] = {
-    "EGPData": "ri.foundry.main.dataset.0e8c0c3d-5fa6-4529-9627-8d94fce60873",
+    "EGPData": "ri.foundry.main.dataset.acb9aa7a-a5eb-48d9-be66-701a52eb4a2b",
     "ProcessHistoryEGPSummary": "ri.foundry.main.dataset.e1a1711d-560f-4cbf-b2dd-ddaa2ea625f1",
     "PartProduced": "ri.foundry.main.dataset.8848e862-ca48-4e4b-a3d9-e446787b4771",
     "ProcessHistoryGrinder": "ri.foundry.main.dataset.437d475e-7678-447e-b33d-f82d0aec5601",
