@@ -66,3 +66,63 @@ if sample is not None and not sample.empty:
     for c in ("G1SRWC", "G1SLWF", "G2SRWC", "G2SLWF"):
         vals = sorted(pd.Series(sample[c]).dropna().unique().tolist())[:12]
         print(f"{c}:", vals)
+
+# 3) What does EGP.SubID look like, and which grinder id matches it?
+#    Goal: find out if we can join grinder DIRECTLY to EGP (skip the marker).
+egp = run(
+    "EGP SubID sample",
+    "SELECT E.SubID FROM ProcessData.ProcessHistory.EGPData AS E "
+    "WHERE E.ReadTime >= :gstart AND E.ReadTime <= :gend",
+    {"gstart": start, "gend": end},
+)
+if egp is not None and not egp.empty:
+    egp_ids = pd.Series(egp["SubID"]).astype(str)
+    print("\n--- sample EGP.SubID values ---")
+    print(egp_ids.dropna().unique()[:8].tolist())
+
+    if sample is not None and not sample.empty:
+        egp_set = set(egp_ids.dropna().unique())
+        sub_set = set(pd.Series(sample["Subid"]).astype(str).dropna().unique())
+        gsub_set = set(pd.Series(sample["GrinderSubid"]).astype(str).dropna().unique())
+        print("\n--- overlap of EGP.SubID with grinder ids ---")
+        print("EGP.SubID matches grinder.Subid       :", len(egp_set & sub_set))
+        print("EGP.SubID matches grinder.GrinderSubid:", len(egp_set & gsub_set))
+
+# 4) Does grinder.Subid join to EGP directly (no marker)?
+run(
+    "direct join grinder.Subid = EGP.SubID",
+    "SELECT E.SubID, phg.EquipmentName, phg.ReadTime AS GrindTime "
+    "FROM mfg.ProcessHistoryGrinder AS phg "
+    "INNER JOIN ProcessData.ProcessHistory.EGPData AS E "
+    "  ON phg.Subid = E.SubID "
+    "WHERE phg.ReadTime >= :gstart AND phg.ReadTime <= :gend",
+    {"gstart": start, "gend": end},
+)
+
+# 5) End-to-end: the actual metrology loaders under Foundry.
+import metrology as m  # noqa: E402
+
+print("\n=== load_grinder_info (windowed) ===")
+try:
+    gi = m.load_grinder_info([], start=start, end=end)
+    print("rows:", gi.shape)
+    print(gi.head(8).to_string())
+except Exception:
+    traceback.print_exc()
+
+print("\n=== load_grinder_grooves (windowed) ===")
+try:
+    gg = m.load_grinder_grooves(start, end)
+    print("rows:", gg.shape)
+    print(list(gg.columns))
+    print(gg.head(10).to_string())
+except Exception:
+    traceback.print_exc()
+
+print("\n=== _foundry_grinder_long (full detail incl Profile) ===")
+try:
+    gl = m._foundry_grinder_long(start, end)
+    print("rows:", gl.shape)
+    print(gl.head(14).to_string())
+except Exception:
+    traceback.print_exc()

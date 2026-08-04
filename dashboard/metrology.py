@@ -351,6 +351,162 @@ def _agg_from_raw(raw: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return agg.merge(meta.reset_index(), on="SubID", how="left")
 
 
+# --------------------------------------------------------------------------
+# Foundry wide grinder decode
+# --------------------------------------------------------------------------
+# The Foundry ``ProcessHistoryGrinder`` dataset is WIDE: one row per grind
+# reading where ``EquipmentName`` is the grinder line and 12 columns
+# ``G{1,2}S{R,L}W{C,M,F}`` carry the *active groove* (1-4) of each wheel, each
+# with a matching ``{col}_MW`` giving that wheel's meters-worked. Decode:
+#   * ``G1`` = long edge (GRINDER1), ``G2`` = short edge (GRINDER2)
+#   * ``R``/``L`` = right/left side
+#   * ``C``/``M``/``F`` = Coarse/Medium/Fine profile
+# The plate id that joins to the marker (and thus EGPData) is ``GrinderSubid``
+# (the numeric ``Subid`` is grinder-internal and does not link to the marker).
+_GR_GRINDER = {"1": "GRINDER1", "2": "GRINDER2"}  # long / short edge
+_GR_SIDE = {"R": "Right", "L": "Left"}
+_GR_PROFILE = {"C": "Coarse", "M": "Medium", "F": "Fine"}
+_GR_WHEELS = [
+    (f"G{g}S{s}W{p}", g, s, p)
+    for g in ("1", "2")
+    for s in ("R", "L")
+    for p in ("C", "M", "F")
+]
+_GR_LONG_COLS = [
+    "SubID",
+    "EquipmentName",
+    "GrindTime",
+    "GrinderLoc",
+    "Side",
+    "Profile",
+    "Groove",
+    "Meters",
+]
+
+
+def _foundry_grinder_long(
+    start: datetime | None,
+    end: datetime | None,
+    sub_ids: list[str] | None = None,
+) -> pd.DataFrame:
+    """Decode the wide Foundry grinder table into one row per wheel.
+
+    Joins ``ProcessHistoryGrinder`` to ``ProcessHistoryMarker`` on
+    ``phg.GrinderSubid = phm.VirtualSubId`` (so an EGP ``SubID`` resolves), then
+    melts the 12 wide ``G{1,2}S{R,L}W{C,M,F}`` groove columns (and their ``_MW``
+    meters-worked partners) into long form. Returns the columns in
+    :data:`_GR_LONG_COLS`: ``SubID``, ``EquipmentName``, ``GrindTime``,
+    ``GrinderLoc`` (GRINDER1=long / GRINDER2=short), ``Side`` (Left/Right),
+    ``Profile`` (Coarse/Medium/Fine), ``Groove`` ("1".."4") and ``Meters``.
+    """
+    empty = pd.DataFrame(columns=_GR_LONG_COLS)
+    base_sel = ", ".join(
+        f"phg.[{c}] AS {c}, phg.[{c}_MW] AS {c}_MW" for c, *_ in _GR_WHEELS
+    )
+    select = (
+        "SELECT phm.SubId AS SubID, phg.EquipmentName, "
+        "phg.ReadTime AS GrindTime, " + base_sel + " "
+        "FROM mfg.ProcessHistoryGrinder AS phg "
+        "INNER JOIN mfg.ProcessHistoryMarker AS phm "
+        "  ON phg.GrinderSubid = phm.VirtualSubId "
+    )
+    params: dict = {}
+    if start is not None:
+        # Grinding precedes the EGP read; widen the lower bound.
+        clauses = ["phg.ReadTime >= :gstart"]
+        params["gstart"] = start - timedelta(hours=6)
+        if end is not None:
+            clauses.append("phg.ReadTime <= :gend")
+            params["gend"] = end
+        sql = select + "WHERE " + " AND ".join(clauses)
+    elif sub_ids:
+        keys = [f"sid{i}" for i in range(len(sub_ids))]
+        sql = select + "WHERE phm.SubId IN (" + ", ".join(f":{k}" for k in keys) + ")"
+        params = dict(zip(keys, sub_ids))
+    else:
+        return empty
+
+    wide = _read_sql(sql, params)
+    if wide.empty:
+        return empty
+    wide["SubID"] = wide["SubID"].astype(str)
+    wide["GrindTime"] = pd.to_datetime(wide["GrindTime"], errors="coerce")
+
+    frames: list[pd.DataFrame] = []
+    for col, g, s, p in _GR_WHEELS:
+        if col not in wide.columns:
+            continue
+        part = wide[["SubID", "EquipmentName", "GrindTime"]].copy()
+        part["GrinderLoc"] = _GR_GRINDER[g]
+        part["Side"] = _GR_SIDE[s]
+        part["Profile"] = _GR_PROFILE[p]
+        part["Groove"] = (
+            pd.to_numeric(wide[col], errors="coerce").astype("Int64").astype("string")
+        )
+        mw = wide.get(f"{col}_MW")
+        part["Meters"] = pd.to_numeric(mw, errors="coerce") if mw is not None else pd.NA
+        frames.append(part)
+    if not frames:
+        return empty
+    long = pd.concat(frames, ignore_index=True)
+    long = long[long["Groove"].notna() & (long["Groove"] != "<NA>")]
+    if sub_ids:
+        long = long[long["SubID"].isin({str(x) for x in sub_ids})]
+    return long[_GR_LONG_COLS]
+
+
+def _foundry_grinder_info(
+    sub_ids: list[str],
+    start: datetime | None,
+    end: datetime | None,
+) -> pd.DataFrame:
+    """Foundry equivalent of :func:`load_grinder_info` — one row per plate.
+
+    The wide grinder row already carries the grinder line (``EquipmentName``)
+    and grind time per plate, so we only need the marker join to resolve the
+    plate ``SubID``. ``GrinderLoc`` (long/short) is not a single value here —
+    one physical grinder line grinds both edges — so it is left null; the
+    per-edge / per-groove detail is available via :func:`load_grinder_grooves`.
+    """
+    empty = pd.DataFrame(columns=["SubID", "EquipmentName", "GrinderLoc", "GrindTime"])
+    select = (
+        "SELECT phm.SubId AS SubID, phg.EquipmentName, phg.ReadTime AS GrindTime "
+        "FROM mfg.ProcessHistoryGrinder AS phg "
+        "INNER JOIN mfg.ProcessHistoryMarker AS phm "
+        "  ON phg.GrinderSubid = phm.VirtualSubId "
+    )
+    params: dict = {}
+    if start is not None:
+        clauses = ["phg.ReadTime >= :gstart"]
+        params["gstart"] = start - timedelta(hours=6)
+        if end is not None:
+            clauses.append("phg.ReadTime <= :gend")
+            params["gend"] = end
+        sql = select + "WHERE " + " AND ".join(clauses)
+    elif sub_ids:
+        keys = [f"sid{i}" for i in range(len(sub_ids))]
+        sql = select + "WHERE phm.SubId IN (" + ", ".join(f":{k}" for k in keys) + ")"
+        params = dict(zip(keys, sub_ids))
+    else:
+        return empty
+
+    try:
+        gdf = _read_sql(sql, params)
+    except Exception:
+        return empty
+    if gdf.empty:
+        return empty
+    gdf["SubID"] = gdf["SubID"].astype(str)
+    if start is not None and sub_ids:
+        gdf = gdf[gdf["SubID"].isin({str(s) for s in sub_ids})]
+    gdf["GrindTime"] = pd.to_datetime(gdf["GrindTime"], errors="coerce")
+    gdf = gdf.dropna(subset=["EquipmentName"])
+    # One grind record per plate: keep the most recent grind pass.
+    gdf = gdf.sort_values("GrindTime").drop_duplicates("SubID", keep="last")
+    gdf["GrinderLoc"] = None
+    return gdf[["SubID", "EquipmentName", "GrinderLoc", "GrindTime"]]
+
+
 def load_grinder_info(
     sub_ids: list[str],
     mock: bool | None = None,
@@ -384,6 +540,8 @@ def load_grinder_info(
         return empty
     if not sub_ids and start is None:
         return empty
+    if config.metrology_data_source() == "foundry":
+        return _foundry_grinder_info(sub_ids, start, end)
     try:
         select = (
             "SELECT phm.SubId AS SubID, phg.EquipmentName, "
@@ -886,6 +1044,23 @@ def load_grinder_grooves(
     empty = pd.DataFrame(columns=["SubID", "GrinderLoc", "EquipmentName", "Groove"])
     if mock if mock is not None else config.use_mock_metrology():
         return empty
+    if config.metrology_data_source() == "foundry":
+        long = _foundry_grinder_long(start, end)
+        if long.empty:
+            return empty
+        # The Fine (finishing) wheel cuts the final edge surface, so its active
+        # groove is the one attributable to an edge defect. Collapse the wide
+        # decode to one row per (SubID, GrinderLoc) using the Fine profile and
+        # the most recent grind reading, carrying Profile/Meters for display.
+        fine = long[long["Profile"] == "Fine"]
+        if fine.empty:
+            fine = long
+        fine = fine.sort_values("GrindTime").drop_duplicates(
+            ["SubID", "GrinderLoc"], keep="last"
+        )
+        return fine[
+            ["SubID", "GrinderLoc", "EquipmentName", "Groove", "Profile", "Meters"]
+        ]
     try:
         gcols = ", ".join(f"phg.[Groove{i}MetersWorked] AS G{i}" for i in range(1, 6))
         sql = (
