@@ -204,6 +204,25 @@ def _make_engine():
     return _ENGINE
 
 
+def _read_sql(sql: str, params: dict | None = None) -> pd.DataFrame:
+    """Run a read-only query against the configured live source.
+
+    Routes to Palantir Foundry when ``FS50_DATA_SOURCE=foundry`` (translating
+    the T-SQL to Spark SQL and swapping table names for dataset RIDs), otherwise
+    to the pooled SQL Server engine. Callers keep writing plain T-SQL.
+    """
+    params = params or {}
+    if config.metrology_data_source() == "foundry":
+        import foundry_source
+
+        return foundry_source.query(sql, params)
+    from sqlalchemy import text
+
+    engine = _make_engine()
+    with engine.connect() as conn:
+        return pd.read_sql(text(sql), conn, params=params)
+
+
 def load_egp_data(
     sub_ids: list[str] | None = None,
     start: datetime | None = None,
@@ -218,10 +237,7 @@ def load_egp_data(
     if mock if mock is not None else config.use_mock_metrology():
         return _mock_egp_data(sub_ids)
 
-    # Real database path. Uses SQLAlchemy so pandas can read directly.
-    from sqlalchemy import text  # local import: optional dep
-
-    engine = _make_engine()
+    # Real database path.
     sql = _egp_select()
     clauses = []
     params: dict = {}
@@ -239,8 +255,7 @@ def load_egp_data(
     if clauses:
         sql += "\nWHERE " + " AND ".join(clauses)
     sql += "\nORDER BY E.[SubID], E.[Position]"
-    with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn, params=params)
+    return _read_sql(sql, params)
 
 
 def _egp_agg_select(cols: list[str]) -> str:
@@ -291,9 +306,6 @@ def load_egp_agg(
     if mock if mock is not None else config.use_mock_metrology():
         return _agg_from_raw(_mock_egp_data(), cols)
 
-    from sqlalchemy import text
-
-    engine = _make_engine()
     sql = _egp_agg_select(cols)
     clauses: list[str] = []
     params: dict = {}
@@ -306,8 +318,7 @@ def load_egp_agg(
     if clauses:
         sql += "\nWHERE " + " AND ".join(clauses)
     sql += "\nGROUP BY E.[SubID]"
-    with engine.connect() as conn:
-        df = pd.read_sql(text(sql), conn, params=params)
+    df = _read_sql(sql, params)
     if not df.empty:
         df["SubID"] = df["SubID"].astype(str)
         df["ReadTime"] = pd.to_datetime(df["ReadTime"], errors="coerce")
@@ -374,9 +385,6 @@ def load_grinder_info(
     if not sub_ids and start is None:
         return empty
     try:
-        from sqlalchemy import text
-
-        engine = _make_engine()
         select = (
             "SELECT phm.SubId AS SubID, phg.EquipmentName, "
             "       phg.Location AS GrinderLoc, phg.ReadTime AS GrindTime "
@@ -400,8 +408,7 @@ def load_grinder_info(
                 select + "WHERE phm.SubId IN (" + ", ".join(f":{k}" for k in keys) + ")"
             )
             params = dict(zip(keys, sub_ids))
-        with engine.connect() as conn:
-            gdf = pd.read_sql(text(sql), conn, params=params)
+        gdf = _read_sql(sql, params)
         if gdf.empty:
             return empty
         gdf["SubID"] = gdf["SubID"].astype(str)
@@ -465,9 +472,6 @@ def load_vtd_info(
     if not sub_ids and start is None:
         return empty
     try:
-        from sqlalchemy import text
-
-        engine = _make_engine()
         select = (
             "SELECT SubId AS SubID, EquipmentName AS VtdName, "
             "       ReadTime AS VtdTime "
@@ -486,8 +490,7 @@ def load_vtd_info(
             keys = [f"sid{i}" for i in range(len(sub_ids))]
             sql = select + "WHERE SubId IN (" + ", ".join(f":{k}" for k in keys) + ")"
             params = dict(zip(keys, sub_ids))
-        with engine.connect() as conn:
-            vdf = pd.read_sql(text(sql), conn, params=params)
+        vdf = _read_sql(sql, params)
         if vdf.empty:
             return empty
         vdf["SubID"] = vdf["SubID"].astype(str)
@@ -525,9 +528,6 @@ def load_broken_plates(
     if mock if mock is not None else config.use_mock_metrology():
         return _mock_broken_plates(start, end)
     try:
-        from sqlalchemy import text
-
-        engine = _make_engine()
         sql = (
             "SELECT [ID] AS SubID, [SourceLocation] AS VtdLine, "
             "       [ScrapLocation] AS ScrapLocation, [TimeStamp] AS BrokenTime "
@@ -547,8 +547,7 @@ def load_broken_plates(
             params["bend"] = end + timedelta(hours=24)
         if clauses:
             sql += " AND " + " AND ".join(clauses)
-        with engine.connect() as conn:
-            bdf = pd.read_sql(text(sql), conn, params=params)
+        bdf = _read_sql(sql, params)
         if bdf.empty:
             return empty
         bdf["SubID"] = bdf["SubID"].astype(str)
@@ -747,25 +746,16 @@ def detect_defects(
     if mock if mock is not None else config.use_mock_metrology():
         return _mock_defects()
 
-    from sqlalchemy import text
-
-    engine = _make_engine()
     out: list[dict] = []
 
     radius_rule = config.DEFECT_RULES.get("Radius")
     want_radius = bool(radius_rule and radius_rule.get("mode") == "median_tol")
 
     def _fetch_band():
-        with engine.connect() as conn:
-            return pd.read_sql(
-                text(_defect_scan_sql()), conn, params={"start": start, "end": end}
-            )
+        return _read_sql(_defect_scan_sql(), {"start": start, "end": end})
 
     def _fetch_radius():
-        with engine.connect() as conn:
-            return pd.read_sql(
-                text(_radius_scan_sql()), conn, params={"start": start, "end": end}
-            )
+        return _read_sql(_radius_scan_sql(), {"start": start, "end": end})
 
     # The chip/dropout band scan and the shiner radius scan are independent
     # reads of EGPData; run them concurrently instead of back-to-back.
@@ -897,9 +887,6 @@ def load_grinder_grooves(
     if mock if mock is not None else config.use_mock_metrology():
         return empty
     try:
-        from sqlalchemy import text
-
-        engine = _make_engine()
         gcols = ", ".join(f"phg.[Groove{i}MetersWorked] AS G{i}" for i in range(1, 6))
         sql = (
             "SELECT phm.SubId AS SubID, phg.EquipmentName, phg.Location AS GrinderLoc, "
@@ -910,12 +897,7 @@ def load_grinder_grooves(
             "WHERE phg.ReadTime >= :gstart AND phg.ReadTime <= :gend "
             "ORDER BY phg.EquipmentName, phg.Location, phg.Name, phg.ReadTime"
         )
-        with engine.connect() as conn:
-            g = pd.read_sql(
-                text(sql),
-                conn,
-                params={"gstart": start - timedelta(hours=6), "gend": end},
-            )
+        g = _read_sql(sql, {"gstart": start - timedelta(hours=6), "gend": end})
         if g.empty:
             return empty
         g["SubID"] = g["SubID"].astype(str)

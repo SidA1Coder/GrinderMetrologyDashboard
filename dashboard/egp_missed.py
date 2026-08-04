@@ -44,8 +44,15 @@ def _run_query(sql, params: dict) -> pd.DataFrame:
 
     SQL Server error 596 ("session in kill state") means the Resource Governor
     terminated the connection.  We dispose the pool to flush dead connections
-    and open a fresh one for the retry.
+    and open a fresh one for the retry.  When ``FS50_DATA_SOURCE=foundry`` the
+    query is routed to Foundry instead (no retry needed there).
     """
+    if config.metrology_data_source() == "foundry":
+        import foundry_source
+
+        # sql may be a SQLAlchemy TextClause; foundry_source wants a plain str.
+        return foundry_source.query(str(getattr(sql, "text", sql)), params)
+
     from metrology import _make_engine  # local import — keeps dep optional
 
     def _attempt():

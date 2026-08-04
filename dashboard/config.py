@@ -119,6 +119,12 @@ METROLOGY_DRIVER = os.getenv("FS50_MET_DRIVER", "SQL Server")
 METROLOGY_CONN_STR = os.getenv("FS50_MET_CONN", "").strip()
 METROLOGY_USE_MOCK = os.getenv("FS50_MET_USE_MOCK", "auto").lower()
 
+# Where live metrology data comes from: "sql" (SQL Server ODS, default) or
+# "foundry" (query Palantir Foundry datasets via foundry-dev-tools). The
+# Foundry path translates the same T-SQL to Spark SQL and swaps table names for
+# dataset RIDs (see foundry_source.py). Mock mode overrides both.
+METROLOGY_DATA_SOURCE = os.getenv("FS50_DATA_SOURCE", "sql").strip().lower()
+
 # Which edge profiler side(s) to evaluate. The EGPData.SerialNumber column
 # labels rows e.g. "Edge Profiler 1 (LEL)" / "... (SEL)".
 METROLOGY_PROFILER = os.getenv("FS50_MET_PROFILER", "Edge Profiler 1 (LEL)")
@@ -223,6 +229,11 @@ def use_mock_metrology() -> bool:
     # auto: a connection string is always available (assembled from the site),
     # so default to the live ODS. Force mock with FS50_MET_USE_MOCK=1.
     return False
+
+
+def metrology_data_source() -> str:
+    """Return the live metrology data source: ``"sql"`` or ``"foundry"``."""
+    return "foundry" if METROLOGY_DATA_SOURCE == "foundry" else "sql"
 
 
 def metrology_odbc_str() -> str:
