@@ -141,7 +141,7 @@ def load_downstream_reads(
         # Inline SubIDs and locations directly — SubIDs are all-numeric (safe),
         # locations are known constants.  Avoids generating thousands of :sid0…
         # bind params which causes SQL Server to build a terrible query plan.
-        all_locs = FS100_LOCATIONS + FS350_LOCATIONS
+        all_locs = FS100_LOCATIONS
         loc_in = ", ".join(f"'{loc}'" for loc in all_locs)
         # Validate: only allow numeric SubIDs to prevent any injection risk.
         clean_ids = [s for s in sub_ids if str(s).isdigit()]

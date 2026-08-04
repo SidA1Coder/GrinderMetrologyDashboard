@@ -341,6 +341,11 @@ with st.spinner("Loading Broken Monitor data…"):
 with st.spinner("Detecting defect alerts…"):
     adf = load_alerts(win_start.isoformat(), win_end.isoformat(), bool(force_mock))
 
+# Separate 24-hour window for the raw data table (independent of sidebar window).
+_raw_table_start = (datetime.now() - timedelta(hours=24)).isoformat()
+_raw_table_end = datetime.now().isoformat()
+adf_1d = load_alerts(_raw_table_start, _raw_table_end, bool(force_mock))
+
 # FS100 broken feed is only needed by the FS100 Broken tab (and its KPI tile).
 # Load it lazily so the main Grinder-Health landing page stays fast: the query
 # runs the first time the FS100 tab is opened (or when the tile is expanded),
@@ -529,11 +534,20 @@ with tab_overview:
             "sensor target (MaximumProfileHt) — the plate was likely too far / "
             "too close, so those detections may be false. They are still listed."
         )
-        show = a.copy()
+        show = adf_1d.copy() if adf_1d is not None and not adf_1d.empty else a.copy()
         show["when"] = pd.to_datetime(show["read_time"], errors="coerce").dt.strftime(
             "%m-%d %H:%M"
         )
         show["run (mm)"] = show["length_mm"]
+
+        # Derive EGP sensor ID from edge + grinder lane letter.
+        def _egp_id(row):
+            prefix = "LE" if str(row.get("edge", "")).startswith("L") else "SE"
+            g = str(row.get("grinder", ""))
+            lane = g[-1] if g and g[-1].isalpha() else "?"
+            return f"EGP {prefix}-{lane}"
+
+        show["EGP ID"] = show.apply(_egp_id, axis=1)
         if "suspect_focus" in show.columns:
             off = show["max_offset_mm"] if "max_offset_mm" in show.columns else None
             show["Skewed?"] = [
@@ -564,6 +578,7 @@ with tab_overview:
                 "Metric",
                 "Edge",
                 "Side",
+                "EGP ID",
                 "Grinder",
                 "Groove",
                 "run (mm)",
@@ -578,8 +593,8 @@ with tab_overview:
             height=min(420, 60 + 35 * min(len(disp), 10)),
         )
         st.caption(
-            "Each row: defect type, which edge (Long/Short), which side "
-            "(Left/Right), the grinder line and groove responsible, the "
+            "Last 24 h. Each row: defect type, EGP sensor ID, which edge (Long/Short), "
+            "side (Left/Right), the grinder line and groove responsible, the "
             "consecutive run length, and whether the panel is a suspected "
             "skewed / out-of-focus reading. Newest first."
         )
@@ -797,13 +812,13 @@ with tab_overview:
         "EGP missed detection capture",
         "Plates marked bad (MES code 998 / 99) that continued downstream",
     )
-    _egp_win_h = 3  # hours to look back
+    _egp_win_h = 1  # hours to look back
     _egp_end = datetime.now()
     _egp_start = _egp_end - timedelta(hours=_egp_win_h)
     with st.spinner(f"Checking EGP bad-plate codes (last {_egp_win_h} h)\u2026"):
         _ms = egp_missed.build_missed_summary(_egp_start, _egp_end)
 
-    _col_egp, _col_fs100, _col_fs350 = st.columns(3)
+    _col_egp, _col_fs100 = st.columns(2)
 
     # --- Box 1: Marked Bad at EGP -------------------------------------------
     with _col_egp:
@@ -861,40 +876,10 @@ with tab_overview:
         elif _ms["bad_count"] > 0:
             st.success("None reached FS100 \u2714")
 
-    # --- Box 3: Reached FS350 (Bussing) -------------------------------------
-    with _col_fs350:
-        st.metric(
-            "\U0001f6a8 Reached FS350 (Bussing)",
-            _ms["fs350_count"],
-            help="Bad EGP plates that had a barcode read at any BUSSING station",
-        )
-        if _ms["fs350_count"] > 0:
-            with st.popover("Details + lane breakdown"):
-                st.markdown(
-                    f"**{_ms['fs350_count']} bad plates read at FS350 "
-                    f"(Bussing) — last {_egp_win_h} h**"
-                )
-                f3 = _ms["fs350_df"].copy()
-                loc_dist = f3["Location"].value_counts()
-                if not loc_dist.empty:
-                    st.markdown("**By Bussing lane:**")
-                    for loc, cnt in loc_dist.items():
-                        st.write(f"\u2022 {loc}: {int(cnt)} reads")
-                f3["TimestampUtc"] = f3["TimestampUtc"].dt.strftime("%m-%d %H:%M")
-                st.dataframe(
-                    f3[["SubId", "Location", "TimestampUtc"]],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                st.caption("Select all + Ctrl-C to copy.")
-        elif _ms["bad_count"] > 0:
-            st.success("None reached FS350 \u2714")
-
     st.caption(
         f"Window: last {_egp_win_h} h. Bad = MES_ResultCode 998 (EGP A/B) or 99 (EGP C). "
         "A SubID is counted once even if both LE and SE reads are bad. "
-        "Downstream checks join on SubID against "
-        "PartProduced at VTD\_COATER (A–E) and BUSSING (A–D)."
+        "Downstream check: PartProduced at VTD\_COATER lanes A–E."
     )
 
 
