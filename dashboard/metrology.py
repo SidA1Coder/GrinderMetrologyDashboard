@@ -776,8 +776,8 @@ def _defect_scan_sql() -> str:
     ph = config.PROFILE_HT_METRIC
     cols += [f"E.[{ph}_Left]", f"E.[{ph}_Right]"]
     return (
-        "SELECT E.[SubID], E.[SerialNumber], E.[ReadTime], E.[Position], "
-        "E.[PanelPosX], E.[PanelPosY], "
+        "SELECT E.[SubID], E.[EquipmentID], E.[SerialNumber], E.[ReadTime], "
+        "E.[Position], E.[PanelPosX], E.[PanelPosY], "
         + ", ".join(cols)
         + " FROM ProcessData.ProcessHistory.EGPData AS E "
         "WHERE E.[ReadTime] BETWEEN :start AND :end AND (" + " OR ".join(conds) + ")"
@@ -802,7 +802,7 @@ def _radius_scan_sql() -> str:
     return (
         "WITH R AS ("
         " SELECT E.[SubID], E.[SerialNumber], E.[ReadTime], E.[Position],"
-        " E.[PanelPosX], E.[PanelPosY],"
+        " E.[EquipmentID], E.[PanelPosX], E.[PanelPosY],"
         " E.[Radius_Left], E.[Radius_Right],"
         f" E.[{ph}_Left], E.[{ph}_Right],"
         " PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY E.[Radius_Left])"
@@ -811,7 +811,8 @@ def _radius_scan_sql() -> str:
         " OVER (PARTITION BY E.[SubID], E.[SerialNumber]) AS medR"
         " FROM ProcessData.ProcessHistory.EGPData AS E"
         " WHERE E.[ReadTime] BETWEEN :start AND :end)"
-        " SELECT SubID, SerialNumber, ReadTime, Position, PanelPosX, PanelPosY,"
+        " SELECT SubID, SerialNumber, ReadTime, Position, EquipmentID,"
+        " PanelPosX, PanelPosY,"
         f" Radius_Left, Radius_Right, [{ph}_Left], [{ph}_Right], medL, medR FROM R"
         f" WHERE Radius_Left < medL * {lo} OR Radius_Left > medL * {hi}"
         f" OR Radius_Right < medR * {lo} OR Radius_Right > medR * {hi}"
@@ -945,6 +946,7 @@ def detect_defects(
                     [
                         "SubID",
                         "SerialNumber",
+                        "EquipmentID",
                         "ReadTime",
                         "Position",
                         "PanelPosX",
@@ -961,11 +963,13 @@ def detect_defects(
                 # same Position values, so merging them would fabricate runs.
                 for (sub_id, _serial), sub in hit.groupby(["SubID", "SerialNumber"]):
                     rt = sub["ReadTime"].max()
+                    equip = sub["EquipmentID"].iloc[0]
                     for run in _runs_from_positions(sub, rule["min_mm"]):
                         out.append(
                             {
                                 "sub_id": sub_id,
                                 "read_time": rt,
+                                "equip_id": equip,
                                 "defect": rule["defect"],
                                 "metric": metric,
                                 "side": side,
@@ -994,6 +998,7 @@ def detect_defects(
                     [
                         "SubID",
                         "SerialNumber",
+                        "EquipmentID",
                         "ReadTime",
                         "Position",
                         "PanelPosX",
@@ -1010,11 +1015,13 @@ def detect_defects(
                 # interleave the same Position values — don't merge into one run.
                 for (sub_id, _serial), sub in hit.groupby(["SubID", "SerialNumber"]):
                     rt = sub["ReadTime"].max()
+                    equip = sub["EquipmentID"].iloc[0]
                     for run in _runs_from_positions(sub, rule["min_mm"]):
                         out.append(
                             {
                                 "sub_id": sub_id,
                                 "read_time": rt,
+                                "equip_id": equip,
                                 "defect": rule["defect"],
                                 "metric": "Radius",
                                 "side": side,
@@ -1357,6 +1364,11 @@ def _mock_defects() -> pd.DataFrame:
             "suspect_focus",
             "max_offset_mm",
         ],
+    ).assign(
+        equip_id=lambda d: [
+            f"EGP {'LE' if str(e).startswith('L') else 'SE'}-{str(n)[5:6] or '?'}"
+            for e, n in zip(d["edge"], d["EquipmentName"])
+        ]
     )
 
 

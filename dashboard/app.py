@@ -540,8 +540,12 @@ with tab_overview:
         )
         show["run (mm)"] = show["length_mm"]
 
-        # Derive EGP sensor ID from edge + grinder lane letter.
+        # EGP sensor ID: prefer the real EquipmentID captured in EGPData; only
+        # fall back to deriving it from edge + grinder lane when it's missing.
         def _egp_id(row):
+            eq = row.get("equip_id")
+            if eq is not None and pd.notna(eq) and str(eq).strip():
+                return str(eq)
             prefix = "LE" if str(row.get("edge", "")).startswith("L") else "SE"
             g = str(row.get("grinder", ""))
             lane = g[-1] if g and g[-1].isalpha() else "?"
@@ -561,6 +565,12 @@ with tab_overview:
             ]
         else:
             show["Skewed?"] = ""
+        # Plates whose grind couldn't be resolved (grinder lineage not found in
+        # the marker join for this window) have no grinder/groove — show "?"
+        # rather than a blank/NaN so it's clear the value is unknown, not empty.
+        for _c in ("grinder", "groove"):
+            if _c in show.columns:
+                show[_c] = show[_c].fillna("?").replace("", "?")
         disp = show.rename(
             columns={
                 "defect": "Defect",
@@ -591,6 +601,13 @@ with tab_overview:
             use_container_width=True,
             hide_index=True,
             height=min(420, 60 + 35 * min(len(disp), 10)),
+        )
+        st.download_button(
+            "⬇️ Save table (CSV)",
+            data=disp.to_csv(index=False).encode("utf-8"),
+            file_name=f"egp_alerts_{datetime.now():%Y%m%d_%H%M}.csv",
+            mime="text/csv",
+            help="Download the last-24 h defect-alerts table to your PC.",
         )
         st.caption(
             "Last 24 h. Each row: defect type, EGP sensor ID, which edge (Long/Short), "
