@@ -179,6 +179,7 @@ def load_downstream_reads(
 def build_missed_summary(
     start: datetime | str,
     end: datetime | str,
+    sub_ids: list[str] | None = None,
 ) -> dict:
     """Return a summary dict ready for the dashboard section.
 
@@ -191,8 +192,15 @@ def build_missed_summary(
       fs350_df     : PartProduced rows for bad plates at FS350
       fs350_count  : int — distinct bad SubIDs seen at FS350
       lane_counts  : Series — bad reads per lane (for the bar)
+
+    When ``sub_ids`` is given (grinder-ReadTime filter path) the bad-plate rows
+    are restricted to that exact plate set, so the missed-detection counts cover
+    only plates ground in the selected grinder window.
     """
     bad_df = load_bad_egp(start, end)
+    if sub_ids is not None and not bad_df.empty:
+        keep = {str(s) for s in sub_ids}
+        bad_df = bad_df[bad_df["SubID"].astype(str).isin(keep)].copy()
     bad_subids: list[str] = (
         bad_df["SubID"].dropna().unique().tolist() if not bad_df.empty else []
     )

@@ -191,6 +191,51 @@ lookback = max(1, int(round((win_end - win_start).total_seconds() / 3600)))
 
 
 # --------------------------------------------------------------------------
+# Optional grinder-ReadTime filter (additive; default OFF).
+# Selects plates by when they were GROUND (phg.ReadTime) rather than by their
+# EGP read time. When enabled it drives the grinder-health charts/KPIs, the
+# active-defect alerts table and the EGP-missed view off *exactly those plates*,
+# independent of the EGP "Dashboard time range" above.
+# --------------------------------------------------------------------------
+st.sidebar.divider()
+grind_filter_on = st.sidebar.checkbox(
+    "Filter by grinder ReadTime",
+    value=False,
+    help="Select plates by when they were GROUND (grinder ReadTime), NOT by "
+    "their EGP read time. Drives the grinder-health charts, the active-defect "
+    "alerts table and the EGP-missed view off exactly those plates.",
+)
+grind_start = grind_end = None
+if grind_filter_on:
+    _gnow = datetime.now()
+    _gdefault = (_gnow - timedelta(hours=8)).date()
+    g_range = st.sidebar.date_input(
+        "Grinder calendar range",
+        value=(_gdefault, _gnow.date()),
+        max_value=_gnow.date(),
+        key="grind_date_range",
+        help="Start and end day of the grinder window.",
+    )
+    if isinstance(g_range, (list, tuple)) and len(g_range) == 2:
+        gd_start, gd_end = g_range
+    else:  # user is mid-selection (single date returned)
+        gd_start = gd_end = (
+            g_range[0] if isinstance(g_range, (list, tuple)) else g_range
+        )
+    g_c1, g_c2 = st.sidebar.columns(2)
+    gt_start = g_c1.time_input("From", value=dtime(0, 0), key="grind_t_start")
+    gt_end = g_c2.time_input("To", value=dtime(23, 59), key="grind_t_end")
+    grind_start = datetime.combine(gd_start, gt_start)
+    grind_end = datetime.combine(gd_end, gt_end)
+    if grind_end <= grind_start:
+        st.sidebar.warning("Grinder end must be after start — using a 1-hour window.")
+        grind_end = grind_start + timedelta(hours=1)
+    st.sidebar.caption(
+        f"Grinder window: {grind_start:%Y-%m-%d %H:%M} → {grind_end:%Y-%m-%d %H:%M}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Load + filter data
 # --------------------------------------------------------------------------
 df = store.load_inspections()
@@ -210,6 +255,11 @@ def load_metrology(start_iso: str, end_iso: str, use_ml: bool, force_mock: bool)
     results = metrology.analyze(
         start=start, end=end, use_ml=use_ml, mock=force_mock or None
     )
+    return _metrology_frames(results)
+
+
+def _metrology_frames(results):
+    """Convert a list of MetrologyResult into the (mdf, vdf) per-plate frames."""
     rows = [
         {
             "sub_id": r.sub_id,
@@ -264,6 +314,20 @@ def load_metrology(start_iso: str, end_iso: str, use_ml: bool, force_mock: bool)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def load_metrology_subids(subids_key: str, use_ml: bool, force_mock: bool):
+    """Grinder-health frames for an explicit set of plates (grinder filter path).
+
+    ``subids_key`` is a sorted, comma-joined SubID string so the cache key is
+    stable. Pulls EGP for exactly those plates via the IN-list analyze path.
+    """
+    sub_ids = [s for s in subids_key.split(",") if s]
+    if not sub_ids:
+        return pd.DataFrame(), pd.DataFrame()
+    results = metrology.analyze(sub_ids=sub_ids, use_ml=use_ml, mock=force_mock or None)
+    return _metrology_frames(results)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_alerts(start_iso: str, end_iso: str, force_mock: bool):
     """Detect fully-attributed edge-grind defect alerts for the window.
 
@@ -274,6 +338,36 @@ def load_alerts(start_iso: str, end_iso: str, force_mock: bool):
     start = datetime.fromisoformat(start_iso)
     end = datetime.fromisoformat(end_iso)
     return metrology.build_alerts(start=start, end=end, mock=force_mock or None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_alerts_subids(subids_key: str, start_iso: str, end_iso: str, force_mock: bool):
+    """Defect alerts restricted to an explicit plate set (grinder filter path).
+
+    ``start_iso``/``end_iso`` bound the EGP scan (kept for a fast, indexed read);
+    the SubID IN-list makes the result exact. Groove attribution runs over the
+    same window.
+    """
+    sub_ids = [s for s in subids_key.split(",") if s]
+    if not sub_ids:
+        return pd.DataFrame()
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    return metrology.build_alerts(
+        start=start, end=end, mock=force_mock or None, sub_ids=sub_ids
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_grinds_in_window(gstart_iso: str, gend_iso: str, force_mock: bool):
+    """Plates ground (phg.ReadTime) in [gstart, gend]; the grinder-filter driver.
+
+    Returns the exact grinder-window frame (SubID, EquipmentName, GrinderLoc,
+    GrindTime). Cached 5 min like the other loaders.
+    """
+    start = datetime.fromisoformat(gstart_iso)
+    end = datetime.fromisoformat(gend_iso)
+    return metrology.load_grinds_in_window(start, end, mock=force_mock or None)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -305,7 +399,10 @@ with st.sidebar.expander("Monitor settings", expanded=False):
     )
     if st.button("🔄 Refresh monitor data", use_container_width=True):
         load_metrology.clear()
+        load_metrology_subids.clear()
         load_alerts.clear()
+        load_alerts_subids.clear()
+        load_grinds_in_window.clear()
         load_broken.clear()
         st.rerun()
     auto_teams = st.checkbox(
@@ -323,7 +420,10 @@ if auto:
 
         st_autorefresh(interval=900_000, key="auto")
         load_metrology.clear()
+        load_metrology_subids.clear()
         load_alerts.clear()
+        load_alerts_subids.clear()
+        load_grinds_in_window.clear()
         load_broken.clear()
         if not config.use_mock_db():
             ingestion.scan_and_process(conf=conf)
@@ -331,20 +431,56 @@ if auto:
         st.sidebar.caption("Install streamlit-autorefresh for auto mode.")
 
 with st.spinner("Loading Broken Monitor data…"):
-    mdf, vdf = load_metrology(
-        win_start.isoformat(),
-        win_end.isoformat(),
-        bool(use_ml) and not LANDING_ONLY,
-        bool(force_mock),
-    )
+    if grind_filter_on:
+        # Grinder-ReadTime filter: resolve the exact plate set ground in the
+        # selected grinder window first, then pull EGP for those plates.
+        _ginfo = load_grinds_in_window(
+            grind_start.isoformat(), grind_end.isoformat(), bool(force_mock)
+        )
+        grind_subids = (
+            sorted({str(s) for s in _ginfo["SubID"].dropna().tolist()})
+            if not _ginfo.empty
+            else []
+        )
+        _subids_key = ",".join(grind_subids)
+        # EGP reads lag the grind by minutes; widen the EGP scan a touch so the
+        # indexed read is fast while the SubID IN-list keeps the result exact.
+        grind_egp_start = grind_start
+        grind_egp_end = grind_end + timedelta(hours=2)
+        mdf, vdf = load_metrology_subids(
+            _subids_key,
+            bool(use_ml) and not LANDING_ONLY,
+            bool(force_mock),
+        )
+    else:
+        grind_subids = None
+        grind_egp_start = grind_egp_end = None
+        mdf, vdf = load_metrology(
+            win_start.isoformat(),
+            win_end.isoformat(),
+            bool(use_ml) and not LANDING_ONLY,
+            bool(force_mock),
+        )
 
 with st.spinner("Detecting defect alerts…"):
-    adf = load_alerts(win_start.isoformat(), win_end.isoformat(), bool(force_mock))
+    if grind_filter_on:
+        adf = load_alerts_subids(
+            _subids_key,
+            grind_egp_start.isoformat(),
+            grind_egp_end.isoformat(),
+            bool(force_mock),
+        )
+    else:
+        adf = load_alerts(win_start.isoformat(), win_end.isoformat(), bool(force_mock))
 
 # Separate 24-hour window for the raw data table (independent of sidebar window).
-_raw_table_start = (datetime.now() - timedelta(hours=24)).isoformat()
-_raw_table_end = datetime.now().isoformat()
-adf_1d = load_alerts(_raw_table_start, _raw_table_end, bool(force_mock))
+# Under the grinder filter the table shows the grinder-window plates instead.
+if grind_filter_on:
+    adf_1d = adf
+else:
+    _raw_table_start = (datetime.now() - timedelta(hours=24)).isoformat()
+    _raw_table_end = datetime.now().isoformat()
+    adf_1d = load_alerts(_raw_table_start, _raw_table_end, bool(force_mock))
 
 # FS100 broken feed is only needed by the FS100 Broken tab (and its KPI tile).
 # Load it lazily so the main Grinder-Health landing page stays fast: the query
@@ -832,8 +968,20 @@ with tab_overview:
     _egp_win_h = 1  # hours to look back
     _egp_end = datetime.now()
     _egp_start = _egp_end - timedelta(hours=_egp_win_h)
-    with st.spinner(f"Checking EGP bad-plate codes (last {_egp_win_h} h)\u2026"):
-        _ms = egp_missed.build_missed_summary(_egp_start, _egp_end)
+    if grind_filter_on:
+        # Grinder-ReadTime filter: check missed-detection for exactly the plates
+        # ground in the grinder window (EGP read lags the grind by minutes).
+        _egp_start = grind_egp_start
+        _egp_end = grind_egp_end
+        _egp_label = "grinder window"
+        with st.spinner("Checking EGP bad-plate codes (grinder window)…"):
+            _ms = egp_missed.build_missed_summary(
+                _egp_start, _egp_end, sub_ids=grind_subids or []
+            )
+    else:
+        _egp_label = f"last {_egp_win_h} h"
+        with st.spinner(f"Checking EGP bad-plate codes (last {_egp_win_h} h)\u2026"):
+            _ms = egp_missed.build_missed_summary(_egp_start, _egp_end)
 
     _col_egp, _col_fs100 = st.columns(2)
 
@@ -842,13 +990,13 @@ with tab_overview:
         st.metric(
             "\U0001f6ab Marked bad at EGP",
             _ms["bad_count"],
-            help=f"Distinct SubIDs with MES code 998 or 99 in last {_egp_win_h} h",
+            help=f"Distinct SubIDs with MES code 998 or 99 in {_egp_label}",
         )
         if _ms["bad_count"] > 0:
             with st.popover("Details + lane breakdown"):
                 st.markdown(
                     f"**{_ms['bad_count']} plates marked bad by EGP "
-                    f"(code 998 / 99) — last {_egp_win_h} h**"
+                    f"(code 998 / 99) — {_egp_label}**"
                 )
                 lc = _ms["lane_counts"]
                 if not lc.empty:
@@ -874,7 +1022,7 @@ with tab_overview:
             with st.popover("Details + lane breakdown"):
                 st.markdown(
                     f"**{_ms['fs100_count']} bad plates read at FS100 "
-                    f"(VTD_COATER) — last {_egp_win_h} h**"
+                    f"(VTD_COATER) — {_egp_label}**"
                 )
                 f1 = _ms["fs100_df"].copy()
                 # Lane distribution by Location
@@ -894,7 +1042,7 @@ with tab_overview:
             st.success("None reached FS100 \u2714")
 
     st.caption(
-        f"Window: last {_egp_win_h} h. Bad = MES_ResultCode 998 (EGP A/B) or 99 (EGP C). "
+        f"Window: {_egp_label}. Bad = MES_ResultCode 998 (EGP A/B) or 99 (EGP C). "
         "A SubID is counted once even if both LE and SE reads are bad. "
         "Downstream check: PartProduced at VTD\_COATER lanes A–E."
     )

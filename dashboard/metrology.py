@@ -582,6 +582,27 @@ def load_grinder_info(
         return empty
 
 
+def load_grinds_in_window(
+    start: datetime,
+    end: datetime,
+    mock: bool | None = None,
+) -> pd.DataFrame:
+    """Return plates whose grind (``phg.ReadTime``) falls exactly in [start, end].
+
+    :func:`load_grinder_info` widens the lower bound by a few hours (to catch
+    plates ground shortly before an EGP window) and does not re-clip. This
+    wrapper runs that windowed scan and then clips ``GrindTime`` to the exact
+    interval so a grinder-ReadTime filter selects only the plates actually
+    ground in the requested window. Columns: ``SubID``, ``EquipmentName``,
+    ``GrinderLoc``, ``GrindTime``.
+    """
+    gdf = load_grinder_info([], mock=mock, start=start, end=end)
+    if gdf.empty:
+        return gdf
+    gt = pd.to_datetime(gdf["GrindTime"], errors="coerce")
+    return gdf[(gt >= start) & (gt <= end)].reset_index(drop=True)
+
+
 def load_grinder_map(sub_ids: list[str], mock: bool | None = None) -> dict[str, str]:
     """Backward-compatible ``{SubID: grinder equipment name}`` map."""
     gdf = load_grinder_info(sub_ids, mock=mock)
@@ -753,13 +774,17 @@ class DefectAlert:
         return msg
 
 
-def _defect_scan_sql() -> str:
+def _defect_scan_sql(sub_ids: list[str] | None = None) -> str:
     """Filtered raw scan for fixed-band defects (chips + dropouts).
 
     Returns the ~handful of candidate profile rows (fast, COUNT-like) that could
     be part of a defect run, carrying Position + physical PanelPos so runs can be
     grouped and attributed to a long/short edge locally. Median-relative metrics
     (Radius/shiner) are handled separately in :func:`_radius_scan_sql`.
+
+    When ``sub_ids`` is supplied, an ``E.[SubID] IN (...)`` filter is appended so
+    the scan returns only the requested plates (used by the grinder-ReadTime
+    filter, which resolves the exact plate set from the grinder table first).
     """
     conds = []
     cols = []
@@ -775,16 +800,20 @@ def _defect_scan_sql() -> str:
                 conds.append(f"{c} > {rule['high']}")
     ph = config.PROFILE_HT_METRIC
     cols += [f"E.[{ph}_Left]", f"E.[{ph}_Right]"]
+    where = "E.[ReadTime] BETWEEN :start AND :end AND (" + " OR ".join(conds) + ")"
+    if sub_ids:
+        keys = ", ".join(f":sid{i}" for i in range(len(sub_ids)))
+        where += f" AND E.[SubID] IN ({keys})"
     return (
         "SELECT E.[SubID], E.[EquipmentID], E.[SerialNumber], E.[ReadTime], "
         "E.[Position], E.[PanelPosX], E.[PanelPosY], "
         + ", ".join(cols)
         + " FROM ProcessData.ProcessHistory.EGPData AS E "
-        "WHERE E.[ReadTime] BETWEEN :start AND :end AND (" + " OR ".join(conds) + ")"
+        "WHERE " + where
     )
 
 
-def _radius_scan_sql() -> str:
+def _radius_scan_sql(sub_ids: list[str] | None = None) -> str:
     """Median-relative scan for shiner defects (Radius).
 
     The edge-grind Radius baseline drifts, so the EGP defect-analysis tool flags
@@ -799,6 +828,10 @@ def _radius_scan_sql() -> str:
     f = rule["tol_pct"] / 100.0
     lo, hi = 1.0 - f, 1.0 + f
     ph = config.PROFILE_HT_METRIC
+    where = "E.[ReadTime] BETWEEN :start AND :end"
+    if sub_ids:
+        keys = ", ".join(f":sid{i}" for i in range(len(sub_ids)))
+        where += f" AND E.[SubID] IN ({keys})"
     return (
         "WITH R AS ("
         " SELECT E.[SubID], E.[SerialNumber], E.[ReadTime], E.[Position],"
@@ -810,7 +843,7 @@ def _radius_scan_sql() -> str:
         " PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY E.[Radius_Right])"
         " OVER (PARTITION BY E.[SubID], E.[SerialNumber]) AS medR"
         " FROM ProcessData.ProcessHistory.EGPData AS E"
-        " WHERE E.[ReadTime] BETWEEN :start AND :end)"
+        f" WHERE {where})"
         " SELECT SubID, SerialNumber, ReadTime, Position, EquipmentID,"
         " PanelPosX, PanelPosY,"
         f" Radius_Left, Radius_Right, [{ph}_Left], [{ph}_Right], medL, medR FROM R"
@@ -894,6 +927,7 @@ def detect_defects(
     start: datetime,
     end: datetime,
     mock: bool | None = None,
+    sub_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     """Detect chip/dropout/shiner defect runs over an EGP time window.
 
@@ -901,6 +935,9 @@ def detect_defects(
     *filtered* raw scan (only breaching rows), then groups consecutive samples
     into qualifying runs and classifies each to a long/short edge. Returns one
     row per detected defect (no grinder/groove yet — see :func:`build_alerts`).
+
+    When ``sub_ids`` is given the scan is additionally restricted to those exact
+    plates (grinder-ReadTime filter path).
     """
     if mock if mock is not None else config.use_mock_metrology():
         return _mock_defects()
@@ -910,11 +947,17 @@ def detect_defects(
     radius_rule = config.DEFECT_RULES.get("Radius")
     want_radius = bool(radius_rule and radius_rule.get("mode") == "median_tol")
 
+    sid_params = {f"sid{i}": s for i, s in enumerate(sub_ids)} if sub_ids else {}
+
     def _fetch_band():
-        return _read_sql(_defect_scan_sql(), {"start": start, "end": end})
+        return _read_sql(
+            _defect_scan_sql(sub_ids), {"start": start, "end": end, **sid_params}
+        )
 
     def _fetch_radius():
-        return _read_sql(_radius_scan_sql(), {"start": start, "end": end})
+        return _read_sql(
+            _radius_scan_sql(sub_ids), {"start": start, "end": end, **sid_params}
+        )
 
     # The chip/dropout band scan and the shiner radius scan are independent
     # reads of EGPData; run them concurrently instead of back-to-back.
@@ -1108,6 +1151,7 @@ def build_alerts(
     start: datetime,
     end: datetime,
     mock: bool | None = None,
+    sub_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     """Produce fully-attributed defect alerts for an EGP window.
 
@@ -1115,18 +1159,24 @@ def build_alerts(
     classified to a long/short edge) with :func:`load_grinder_grooves` so every
     alert names the responsible ``Grinder`` line and ``Groove``. Returns a
     DataFrame ordered newest-first with a ready-to-show ``message`` column.
+
+    When ``sub_ids`` is given the defect scan is restricted to those exact
+    plates (grinder-ReadTime filter path); the groove scan still runs over the
+    ``start``/``end`` window and is matched to defects by SubID.
     """
     use_mock = mock if mock is not None else config.use_mock_metrology()
     # The groove/grinder-lineage scan is independent of the defect scan, so run
     # them concurrently: while EGPData is scanned for defect runs, the grinder
     # table is scanned for grooves in parallel.
     if use_mock:
-        defects = detect_defects(start, end, mock=True)
+        defects = detect_defects(start, end, mock=True, sub_ids=sub_ids)
         grooves = load_grinder_grooves(start, end, mock=True)
     else:
         res = _run_parallel(
             {
-                "defects": lambda: detect_defects(start, end, mock=False),
+                "defects": lambda: detect_defects(
+                    start, end, mock=False, sub_ids=sub_ids
+                ),
                 "grooves": lambda: load_grinder_grooves(start, end, mock=False),
             }
         )
